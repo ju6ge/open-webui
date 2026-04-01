@@ -1096,7 +1096,15 @@ def process_tool_result(
             tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
         else:  # OpenAPI
             for item in tool_result:
-                if isinstance(item, str) and item.startswith('data:'):
+                if isinstance(item, str) and item.startswith('data:image'):
+                    tool_result_files.append(
+                        {
+                            'type': 'image',
+                            'url': item,
+                            'content-type': 'image/png'
+                        }
+                    )
+                elif isinstance(item, str) and item.startswith('data:'):
                     tool_result_files.append(
                         {
                             'type': 'data',
@@ -4264,6 +4272,7 @@ async def streaming_chat_response_handler(response, ctx):
                             if file_item.get('type') == 'image' and file_item.get('url', '').startswith('data:'):
                                 # LLM-only: add as input_image part (invisible to serialize_output)
                                 output_parts.append({'type': 'input_image', 'image_url': file_item['url']})
+                                display_files.append(file_item)
                             else:
                                 # Frontend display (MCP images, audio, etc.)
                                 display_files.append(file_item)
