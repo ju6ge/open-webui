@@ -13,6 +13,7 @@
 	import CheckCircle from '$lib/components/icons/CheckCircle.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
+    import Image from '$lib/components/common/Image.svelte';
 
 	import { settings } from '$lib/stores';
 
@@ -142,6 +143,30 @@
 		}
 		return result;
 	})();
+
+    $: allImageFiles = (() => {
+        const result: Array<{ name: string; file: string | object }> = [];
+        for (const t of tokens) {
+            if (t?.attributes?.type !== 'tool_calls') continue;
+            const raw = decode(t.attributes?.files ?? '');
+            try {
+                const parsed = parseJSONString(raw);
+                if (Array.isArray(parsed)) {
+                    for (const file of parsed) {
+                        // Only include images
+                        if (typeof file === 'string' && file.startsWith('data:image/')) {
+                            result.push({ name: t.attributes?.name ?? '', file });
+                        } else if (typeof file === 'object' && 
+                                (file.type === 'image' || (file?.content_type ?? '').startsWith('image/')) && 
+                                file.url) {
+                            result.push({ name: t.attributes?.name ?? '', file });
+                        }
+                    }
+                }
+            } catch {}
+        }
+        return result;
+    })();
 
 	$: summaryText = (() => {
 		const parts = [];
@@ -305,6 +330,18 @@
 			</div>
 		</div>
 	{/if}
+
+    {#if allImageFiles.length > 0}
+        {#each allImageFiles as imageItem, idx}
+            <div class="my-2" id={`${id}-image-${idx}`}>
+                {#if typeof imageItem.file === 'string'}
+                    <Image src={imageItem.file} alt="Tool result image" />
+                {:else}
+                    <Image src={imageItem.file.url} alt="Tool result image" />
+                {/if}
+            </div>
+        {/each}
+    {/if}
 
 	{#if allEmbeds.length > 0}
 		{#each allEmbeds as embedItem, idx}
