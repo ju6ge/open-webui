@@ -1147,6 +1147,32 @@ def response_content_type_selector_active(path_item, operation, components):
     return True
 
 
+def _merge_request_headers(per_call_headers, accept_header, configured_headers):
+    """
+    Merges per-call header parameters, the derived Accept header and
+    configured tool-server headers into a single request header dict.
+    Precedence, lowest to highest: per-call header params, derived Accept
+    header, configured headers (so connection-level credentials can never be
+    overridden by model-provided values). Matching is case-insensitive.
+    """
+    merged = {}
+
+    def _set(key, value):
+        for existing in merged:
+            if existing.lower() == key.lower():
+                merged[existing] = value
+                return
+        merged[key] = value
+
+    for key, value in (per_call_headers or {}).items():
+        _set(key, value)
+    if accept_header:
+        _set('Accept', accept_header)
+    for key, value in (configured_headers or {}).items():
+        _set(key, value)
+    return merged
+
+
 def convert_openapi_to_tool_payload(openapi_spec):
     """
     Converts an OpenAPI specification into a custom tool payload structure.
@@ -1754,27 +1780,9 @@ async def execute_tool_server(
 
         http_method, operation = method_entry
 
-        # Derive a sensible Accept header from the content types the operation
-        # declares on its 2xx responses. If nothing is declared, no Accept
-        # header is sent (previous behavior). If multiple types are declared,
-        # the first one is the default and the synthesized
-        # 'response_content_type' tool parameter selects a different one.
-        # A configured Accept header always takes precedence.
-        response_content_types = get_operation_response_content_types(operation)
-        selector_active = response_content_type_selector_active(methods, operation, openapi.get('components', {}))
-        request_headers = dict(headers)
-        accept_header = None
-        if response_content_types:
-            accept_header = response_content_types[0]
-            if selector_active and isinstance(params, dict):
-                requested = params.get(RESPONSE_CONTENT_TYPE_PARAM)
-                if requested in response_content_types:
-                    accept_header = requested
-        if accept_header and not any(key.lower() == 'accept' for key in request_headers):
-            request_headers['Accept'] = accept_header
-
         path_params = {}
         query_params = {}
+        header_params = {}
         body_params = {}
 
         # Merge path-level and operation-level parameters for execution.
@@ -1807,6 +1815,37 @@ async def execute_tool_server(
                     if value is None or (value == '' and not param.get('required')):
                         continue
                     query_params[param_name] = value
+                if param_in == 'header':
+                    value = params[param_name]
+                    # Skip empty values for optional params (LLMs sometimes
+                    # pass "" instead of omitting optional parameters).
+                    if value is None or (value == '' and not param.get('required')):
+                        continue
+                    if isinstance(value, bool):
+                        value = 'true' if value else 'false'
+                    else:
+                        value = str(value)
+                    header_params[param_name] = value
+
+        # Derive a sensible Accept header from the content types the operation
+        # declares on its 2xx responses. If nothing is declared, no Accept
+        # header is sent (previous behavior). If multiple types are declared,
+        # the first one is the default and the synthesized
+        # 'response_content_type' tool parameter selects a different one.
+        response_content_types = get_operation_response_content_types(operation)
+        selector_active = response_content_type_selector_active(methods, operation, openapi.get('components', {}))
+        accept_header = None
+        if response_content_types:
+            accept_header = response_content_types[0]
+            if selector_active and isinstance(params, dict):
+                requested = params.get(RESPONSE_CONTENT_TYPE_PARAM)
+                if requested in response_content_types:
+                    accept_header = requested
+
+        # Merge per-call header params, the derived Accept header and the
+        # configured tool-server headers (case-insensitive; configured
+        # headers have the highest precedence).
+        request_headers = _merge_request_headers(header_params, accept_header, headers)
 
         final_url = f'{url.rstrip("/")}{route_path}'
         for key, value in path_params.items():
