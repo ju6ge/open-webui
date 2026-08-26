@@ -1068,6 +1068,27 @@ def resolve_schema(schema, components, resolved_schemas=None):
     return resolved_schema
 
 
+def get_operation_response_content_types(operation):
+    """
+    Returns the content types declared on the 2xx responses of an OpenAPI
+    operation, in declaration order, deduplicated.
+    """
+    if not isinstance(operation, dict):
+        return []
+
+    content_types = []
+    for code, response in (operation.get('responses') or {}).items():
+        if not isinstance(code, str) or not code.startswith('2'):
+            continue
+        if not isinstance(response, dict):
+            continue
+        for content_type in (response.get('content') or {}):
+            if content_type and content_type not in content_types:
+                content_types.append(content_type)
+
+    return content_types
+
+
 def convert_openapi_to_tool_payload(openapi_spec):
     """
     Converts an OpenAPI specification into a custom tool payload structure.
