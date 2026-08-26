@@ -1241,6 +1241,25 @@ def convert_openapi_to_tool_payload(openapi_spec):
                         elif resolved_schema.get('type') == 'array':
                             tool['parameters'] = resolved_schema  # special case for array
 
+                # Synthesize an optional parameter so the model can select the
+                # response format (sent as the HTTP Accept header) when the
+                # operation can return multiple content types.
+                parameters = tool['parameters']
+                if (
+                    response_content_type_selector_active(methods, operation, openapi_spec.get('components', {}))
+                    and isinstance(parameters, dict)
+                    and isinstance(parameters.get('properties'), dict)
+                ):
+                    content_types = get_operation_response_content_types(operation)
+                    parameters['properties'][RESPONSE_CONTENT_TYPE_PARAM] = {
+                        'type': 'string',
+                        'enum': content_types,
+                        'description': (
+                            'Content type of the response to request (sent as the HTTP Accept header). '
+                            f'Possible values: {", ".join(content_types)}'
+                        ),
+                    }
+
                 tool_payload.append(tool)
 
     return tool_payload
@@ -1747,7 +1766,7 @@ async def execute_tool_server(
         accept_header = None
         if response_content_types:
             accept_header = response_content_types[0]
-            if selector_active:
+            if selector_active and isinstance(params, dict):
                 requested = params.get(RESPONSE_CONTENT_TYPE_PARAM)
                 if requested in response_content_types:
                     accept_header = requested
@@ -1798,11 +1817,11 @@ async def execute_tool_server(
 
         if operation.get('requestBody', {}).get('content'):
             if params:
-                body_params = dict(params)
-                if selector_active:
+                body_params = params
+                if selector_active and isinstance(body_params, dict):
                     # The selector only configures the Accept header; it must
                     # never be sent in the request body.
-                    body_params.pop(RESPONSE_CONTENT_TYPE_PARAM, None)
+                    body_params = {k: v for k, v in body_params.items() if k != RESPONSE_CONTENT_TYPE_PARAM}
 
         async with aiohttp.ClientSession(
             trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER)
