@@ -1677,6 +1677,15 @@ async def execute_tool_server(
 
         http_method, operation = method_entry
 
+        # Derive a sensible Accept header from the content types the operation
+        # declares on its 2xx responses. If nothing is declared, no Accept
+        # header is sent (previous behavior). A configured Accept header
+        # always takes precedence.
+        response_content_types = get_operation_response_content_types(operation)
+        request_headers = dict(headers)
+        if response_content_types and not any(key.lower() == 'accept' for key in request_headers):
+            request_headers['Accept'] = response_content_types[0]
+
         path_params = {}
         query_params = {}
         body_params = {}
@@ -1732,7 +1741,7 @@ async def execute_tool_server(
                 async with request_method(
                     final_url,
                     json=body_params,
-                    headers=headers,
+                    headers=request_headers,
                     cookies=cookies,
                     ssl=AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL,
                     allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS,
@@ -1757,7 +1766,7 @@ async def execute_tool_server(
             else:
                 async with request_method(
                     final_url,
-                    headers=headers,
+                    headers=request_headers,
                     cookies=cookies,
                     ssl=AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL,
                     allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS,
