@@ -1234,6 +1234,8 @@ def convert_openapi_to_tool_payload(openapi_spec):
                         description = param.get('description') or ''
                     if param_schema.get('enum') and isinstance(param_schema.get('enum'), list):
                         description += f'. Possible values: {", ".join(str(v) for v in param_schema.get("enum"))}'
+                    if param.get('in') == 'header':
+                        description += f' (sent as HTTP header "{param_name}")'
                     param_property = {
                         'type': param_schema.get('type') or 'string',
                         'description': description,
