@@ -1089,6 +1089,64 @@ def get_operation_response_content_types(operation):
     return content_types
 
 
+RESPONSE_CONTENT_TYPE_PARAM = 'response_content_type'
+
+
+def _merged_openapi_parameters(path_item, operation):
+    """
+    Merges path-level and operation-level OpenAPI parameters. Operation-level
+    parameters override path-level ones with the same (name, in) pair.
+    """
+    path_level_params = path_item.get('parameters', []) if isinstance(path_item, dict) else []
+    if not isinstance(path_level_params, list):
+        path_level_params = []
+    op_params = operation.get('parameters', []) if isinstance(operation, dict) else []
+    if not isinstance(op_params, list):
+        op_params = []
+
+    merged_params = {}
+    for param in path_level_params:
+        if isinstance(param, dict) and param.get('name'):
+            merged_params[(param['name'], param.get('in', ''))] = param
+    for param in op_params:
+        if isinstance(param, dict) and param.get('name'):
+            merged_params[(param['name'], param.get('in', ''))] = param
+    return list(merged_params.values())
+
+
+def _request_body_property_names(operation, components):
+    """
+    Returns the property names of the resolved application/json requestBody
+    schema of an operation (empty set if there is none).
+    """
+    if not isinstance(operation, dict):
+        return set()
+    content = operation.get('requestBody', {}).get('content', {})
+    schema = content.get('application/json', {}).get('schema') if isinstance(content, dict) else None
+    if not schema:
+        return set()
+    resolved_schema = resolve_schema(schema, components)
+    properties = resolved_schema.get('properties')
+    return set(properties) if isinstance(properties, dict) else set()
+
+
+def response_content_type_selector_active(path_item, operation, components):
+    """
+    Returns True when a 'response_content_type' selector parameter is
+    synthesized into the tool schema for this operation: multiple 2xx response
+    content types are declared and the parameter name is not already used by a
+    spec parameter or a requestBody property.
+    """
+    if len(get_operation_response_content_types(operation)) < 2:
+        return False
+    for param in _merged_openapi_parameters(path_item, operation):
+        if param.get('name') == RESPONSE_CONTENT_TYPE_PARAM:
+            return False
+    if RESPONSE_CONTENT_TYPE_PARAM in _request_body_property_names(operation, components):
+        return False
+    return True
+
+
 def convert_openapi_to_tool_payload(openapi_spec):
     """
     Converts an OpenAPI specification into a custom tool payload structure.
@@ -1679,12 +1737,22 @@ async def execute_tool_server(
 
         # Derive a sensible Accept header from the content types the operation
         # declares on its 2xx responses. If nothing is declared, no Accept
-        # header is sent (previous behavior). A configured Accept header
-        # always takes precedence.
+        # header is sent (previous behavior). If multiple types are declared,
+        # the first one is the default and the synthesized
+        # 'response_content_type' tool parameter selects a different one.
+        # A configured Accept header always takes precedence.
         response_content_types = get_operation_response_content_types(operation)
+        selector_active = response_content_type_selector_active(methods, operation, openapi.get('components', {}))
         request_headers = dict(headers)
-        if response_content_types and not any(key.lower() == 'accept' for key in request_headers):
-            request_headers['Accept'] = response_content_types[0]
+        accept_header = None
+        if response_content_types:
+            accept_header = response_content_types[0]
+            if selector_active:
+                requested = params.get(RESPONSE_CONTENT_TYPE_PARAM)
+                if requested in response_content_types:
+                    accept_header = requested
+        if accept_header and not any(key.lower() == 'accept' for key in request_headers):
+            request_headers['Accept'] = accept_header
 
         path_params = {}
         query_params = {}
@@ -1730,7 +1798,11 @@ async def execute_tool_server(
 
         if operation.get('requestBody', {}).get('content'):
             if params:
-                body_params = params
+                body_params = dict(params)
+                if selector_active:
+                    # The selector only configures the Accept header; it must
+                    # never be sent in the request body.
+                    body_params.pop(RESPONSE_CONTENT_TYPE_PARAM, None)
 
         async with aiohttp.ClientSession(
             trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER)
