@@ -1784,6 +1784,7 @@ async def execute_tool_server(
         query_params = {}
         header_params = {}
         body_params = {}
+        claimed_param_names = set()
 
         # Merge path-level and operation-level parameters for execution.
         path_level_params = methods.get('parameters', [])
@@ -1806,6 +1807,8 @@ async def execute_tool_server(
                 continue
             param_in = param.get('in')
             if param_name in params:
+                if param_in in ('path', 'query', 'header'):
+                    claimed_param_names.add(param_name)
                 if param_in == 'path':
                     path_params[param_name] = params[param_name]
                 if param_in == 'query':
@@ -1857,10 +1860,15 @@ async def execute_tool_server(
         if operation.get('requestBody', {}).get('content'):
             if params:
                 body_params = params
-                if selector_active and isinstance(body_params, dict):
-                    # The selector only configures the Accept header; it must
-                    # never be sent in the request body.
-                    body_params = {k: v for k, v in body_params.items() if k != RESPONSE_CONTENT_TYPE_PARAM}
+                if isinstance(body_params, dict):
+                    # Only parameters that belong to the request body stay in
+                    # the body; path/query/header params and the selector are
+                    # routed elsewhere and must not leak into it.
+                    excluded = claimed_param_names
+                    if selector_active:
+                        excluded.add(RESPONSE_CONTENT_TYPE_PARAM)
+                    if excluded:
+                        body_params = {k: v for k, v in body_params.items() if k not in excluded}
 
         async with aiohttp.ClientSession(
             trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER)
